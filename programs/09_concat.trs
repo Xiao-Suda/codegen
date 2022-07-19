@@ -1,0 +1,8 @@
+fn main() {
+	let hello = "hello";
+	let world = "world!";
+	println_s(hello + ", " + world);
+
+	print_s("are the strings equal? ");
+	println_b((hello + ", " + world) == "hello, world!");
+}
