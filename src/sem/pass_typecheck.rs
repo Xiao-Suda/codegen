@@ -1,5 +1,4 @@
 
-use colored::Colorize;
 use crate::*;
 
 pub(crate) struct TypecheckPass<'nc> {
@@ -397,15 +396,77 @@ impl<'nc> TypecheckPass<'nc> {
 	/// statement. That's used to check `return` statements for correctness. `rty` should be
 	/// passed unmodified to any recursive calls to `visit_stmt`.
 	fn visit_stmt(&mut self, s: &Box<Stmt>, rty: &Box<Type>) -> SemResult<()> {
-		let _ = rty;
+		use StmtKind::*;
 
-		println!("{}", "Hey, this is the CODEGEN project.".red());
-		println!("{}", "If you completed the typechecker in project 3,".red());
-		println!("{}", "drop your completed pass_typecheck.rs into".red());
-		println!("{}", "the src/sem directory to use it.".red());
+		match &s.kind {
+			Exp(exp) => {
+				let exp_ty = self.visit_exp(&exp)?;
 
-		return Err(SemError::type_mismatch(
-			s.loc(), "a typechecker", "nothing", "pass_typecheck.rs"))
+				// the type of the expression must be void.
+				if !exp_ty.is_void() {
+					return Err(SemError::non_void_expr(&exp));
+				}
+			}
+
+			Let(var) => {
+				self.visit_local_var_decl(var)?;
+			}
+
+			Block(stmts) => {
+				for s in stmts {
+					self.visit_stmt(&s, rty)?;
+				}
+			}
+
+			Return(val) => {
+				match val {
+					Some(exp) => {
+						let exp_ty = self.visit_exp(&exp)?;
+						self.check_types_match(s.loc(), &exp_ty, &rty, "return value")?;
+					}
+					None => {
+						if rty.is_void(){
+
+						} else {
+							return Err(SemError::type_mismatch(s.loc(), &rty.to_string(), &Type::new_void().to_string(), "return value"));
+						}
+					}
+				}
+			}
+
+			Assign { dst, src } => {
+				self.check_assignment_lhs(&dst)?;
+				let dst_type = self.visit_exp(&dst)?;
+				let src_type = self.visit_exp(&src)?;
+				self.check_types_match(s.loc(), &src_type, &dst_type, "rhs of assignment")?;
+			}
+
+			While { cond, code } => {
+				let cond_type = self.visit_exp(&cond)?;
+				self.check_types_match(s.loc(), &cond_type, &Type::new_bool(), "'while' condition")?;
+				self.visit_stmt(&code, rty)?;
+			}
+
+			If { cond, then, else_ } => {
+				let cond_type = self.visit_exp(&cond)?;
+				self.check_types_match(s.loc(), &cond_type, &Type::new_bool(), "'if' condition")?;
+				self.visit_stmt(&then, rty)?;
+
+				if let Some(e) = else_ {
+					self.visit_stmt(&e, rty)?;
+				}
+			}
+
+			For { var, hi, code } => {
+				let var_type = self.visit_local_var_decl(&var)?;
+				self.check_types_match(s.loc(), &var_type, &Type::new_int(), "'for' loop lower bound")?;
+				let hi_type = self.visit_exp(&hi)?;
+				self.check_types_match(s.loc(), &hi_type, &Type::new_int(), "'for' loop upper bound")?;
+				self.visit_stmt(&code, rty)?;
+			}
+		}
+
+		return Ok(());
 	}
 
 	// -------------------------------------------------------------------------------------------
@@ -422,12 +483,145 @@ impl<'nc> TypecheckPass<'nc> {
 	/// Does the actual work of visiting an expression, and returns the type of that expression
 	/// on success.
 	fn visit_exp_impl(&mut self, e: &Box<Exp>) -> SemResult<Box<Type>> {
-		println!("{}", "Hey, this is the CODEGEN project.".red());
-		println!("{}", "If you completed the typechecker in project 3,".red());
-		println!("{}", "drop your completed pass_typecheck.rs into".red());
-		println!("{}", "the src/sem directory to use it.".red());
+		use ExpKind::*;
 
-		return Err(SemError::type_mismatch(
-			e.loc(), "a typechecker", "nothing", "pass_typecheck.rs"))
+		match &e.kind {
+			IntLit(..) =>  return Ok(Type::new_int()),
+			BoolLit(..) => return Ok(Type::new_bool()),
+			StrLit(..) =>  return Ok(Type::new_string()),
+			Null =>        return Ok(Type::new_null()),
+
+			Id(ident) => {
+				let sym = self.get_referenced_symbol(ident);
+				
+				match self.get_sym_type(sym.id){
+					Some(ty) => 
+					{
+						return Ok(ty);
+					}
+					None => {
+						return Err(SemError::not_a_value(&ident));
+					}
+
+				}
+			}
+
+			Field { obj, name } => {
+				let obj_ty = self.visit_exp(obj)?;
+				let sym = self.check_struct_type(&obj, &obj_ty)?;
+				let looked = self.lookup_struct_field(sym, &name)?;
+
+				let meh = self.get_sym_type(looked);
+
+				return Ok(meh.unwrap());
+			}
+
+			Unary { op, lhs } => {
+
+				let lhs_ty = self.visit_exp(lhs)?;
+
+				match op {
+					UnOp::Neg => 
+					{
+						self.check_types_match(lhs.loc(), &lhs_ty, &Type::new_int(), &e.to_string())?;
+    					return Ok(Type::new_int());
+					}
+
+					UnOp::Not => 
+					{
+						self.check_types_match(lhs.loc(), &lhs_ty, &Type::new_bool(), &e.to_string())?;
+   						return Ok(Type::new_bool());
+					}
+				}
+			}
+
+			Binary { op, lhs, rhs } => {
+				match op {
+					// you can match on multiple possibilities with |
+					BinOp::Eq | BinOp::NotEq => {
+						let lhs_ty = self.visit_exp(lhs)?;
+						if lhs_ty.is_void() {
+							return Err(SemError::type_mismatch(lhs.loc(), "non-void type", &lhs_ty.to_string(), &format!("lhs of '{}'", op)));
+						}
+
+						let rhs_ty = self.visit_exp(rhs)?;
+						self.check_types_match(rhs.loc(), &rhs_ty, &lhs_ty, &format!("rhs of '{}'", op))?;
+						return Ok(Type::new_bool());
+					}
+
+					BinOp::Less | BinOp::Greater | BinOp::LessEq | BinOp::GreaterEq => {
+						let lhs_ty = self.visit_exp(lhs)?;
+						self.check_types_match(lhs.loc(), &lhs_ty, &Type::new_int(), &format!("lhs of '{}'", op))?;
+
+						let rhs_ty = self.visit_exp(rhs)?;
+						self.check_types_match(rhs.loc(), &rhs_ty, &lhs_ty, &format!("rhs of '{}'", op))?;
+						return Ok(Type::new_bool());
+					}
+
+					BinOp::And | BinOp::Or => {
+						let lhs_ty = self.visit_exp(lhs)?;
+						self.check_types_match(lhs.loc(), &lhs_ty, &Type::new_bool(), &format!("lhs of '{}'", op))?;
+
+						let rhs_ty = self.visit_exp(rhs)?;
+						self.check_types_match(rhs.loc(), &rhs_ty, &lhs_ty, &format!("rhs of '{}'", op))?;
+						return Ok(Type::new_bool());
+					}
+
+					BinOp::Add => {
+						let lhs_ty = self.visit_exp(lhs)?;
+						if lhs_ty.is_int() {
+							let rhs_ty = self.visit_exp(rhs)?;
+							self.check_types_match(rhs.loc(), &rhs_ty, &lhs_ty, &format!("rhs of '{}'", op))?;
+							return Ok(lhs_ty);
+						}
+						else if lhs_ty.is_string() {
+							let rhs_ty = self.visit_exp(rhs)?;
+							self.check_types_match(rhs.loc(), &rhs_ty, &lhs_ty, &format!("rhs of '{}'", op))?;
+							return Ok(lhs_ty);
+						}
+						return Err(SemError::type_mismatch(lhs.loc(), "'int' or 'string'", &lhs_ty.to_string(), &format!("lhs of '{}'", op)));
+					}
+
+					BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+						let lhs_ty = self.visit_exp(lhs)?;
+						self.check_types_match(lhs.loc(), &lhs_ty, &Type::new_int(), &format!("lhs of '{}'", op))?;
+
+						let rhs_ty = self.visit_exp(rhs)?;
+						self.check_types_match(rhs.loc(), &rhs_ty, &lhs_ty, &format!("rhs of '{}'", op))?;
+						return Ok(Type::new_int());
+					}
+				}
+			}
+
+			Call { callee, args } => {
+				let callee_ty;
+
+				if let Field { obj, name } = &callee.kind {
+					let obj_ty = self.visit_exp(obj)?;
+					let sym = self.check_struct_type(&obj, &obj_ty)?;
+					let looked = self.lookup_struct_method(sym, &name)?;
+					callee_ty = self.get_sym_type(looked).unwrap();
+				} else {
+					callee_ty = self.visit_exp(&callee)?;
+				}
+
+				if let Type::Func { args: arg_types, ret: ret_type } = *callee_ty {
+					self.check_func_args(e.loc(), &args, &arg_types)?;
+					return Ok(ret_type);
+				} else {
+					return Err(self.function_type_error(&e, &callee_ty));
+				}
+			}
+
+			New(ty) => {
+				let struct_ty = self.visit_type(ty)?;
+				self.check_struct_type(&e, &struct_ty)?;
+				return Ok(struct_ty);
+			}
+
+			Parens(exp) => {
+				return self.visit_exp(exp);
+			}
+		}
 	}
 }

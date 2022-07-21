@@ -1013,30 +1013,35 @@ impl<'ctx> DirectCg<'ctx> {
 			}
 
 			Exp(exp) => {
-				let _ = (exp, );
-				unimplemented!("exp statement");
+				self.visit_exp_no_result(exp, b);
 			}
 
 			Let(var) => {
-				let _ = (var, );
-				unimplemented!("let statement");
+				self.visit_local_var_decl(&var, b);
 			}
 
 			Return(val) => {
-				let _ = (val, );
-				unimplemented!("return statement");
+				if let Some(v) = val {
+					let reg = self.visit_exp(&v, b);
+					b.move_(Reg::V0, reg);
+				}
+				b.jump("_return");
 			}
 
 			Assign { dst, src } => {
 				match &dst.kind {
 					ExpKind::Id(ident) => {
-						let _ = (ident, src);
-						unimplemented!("assignment into identifier");
+						let rhs = self.visit_exp(&src, b);
+						let loc = self.get_sym_var_loc(&ident, b);
+						self.reg_into_loc(loc, rhs, b);
 					}
 
 					ExpKind::Field { obj, name } => {
-						let _ = (obj, name, src);
-						unimplemented!("assignment into field");
+						let passed = self.visit_exp_no_free(&obj, b);
+						let old = self.visit_exp(&src, b);
+						let loc = self.get_field_var_loc(&obj, &name, passed);
+						self.reg_into_loc(loc, old, b);
+						b.pop_reg();
 					}
 
 					_ => unreachable!()
@@ -1093,18 +1098,16 @@ impl<'ctx> DirectCg<'ctx> {
 
 		match &e.kind {
 			IntLit(val) => {
-				let _ = (val,);
-				unimplemented!("int literal expression");
+				b.load_immediate(dst, *val as isize);
 			}
 
 			BoolLit(val) => {
-				let _ = (val,);
-				unimplemented!("bool literal expression");
+				b.load_immediate(dst, *val as isize);
 			}
 
 			StrLit(val) => {
-				let _ = (val,);
-				unimplemented!("string literal expression");
+				let label = self.data.add_str_lit(val);
+				b.load_address(dst, &label);
 			}
 
 			Null => {
@@ -1112,18 +1115,19 @@ impl<'ctx> DirectCg<'ctx> {
 			}
 
 			Id(ident) => {
-				let _ = (ident,);
-				unimplemented!("identifier expression");
+				let loc = self.get_sym_var_loc(&ident, b);
+				self.loc_into_reg(dst, loc, b);
 			}
 
 			Field { obj, name } => {
-				let _ = (obj, name);
-				unimplemented!("field expression");
+				self.visit_exp_into_reg(obj, dst, b);
+				let loc = self.get_field_var_loc(obj, name, dst);
+				self.loc_into_reg(dst, loc, b);
 			}
 
 			Unary { op, lhs } => {
-				let _ = (op, lhs);
-				unimplemented!("unary expression");
+				self.visit_exp_into_reg(lhs, dst, b);
+				b.inst_from_unop(*op, dst, dst);
 			}
 
 			Binary { op: BinOp::And, lhs, rhs } => {
@@ -1137,8 +1141,15 @@ impl<'ctx> DirectCg<'ctx> {
 			}
 
 			Binary { op, lhs, rhs } => {
-				let _ = (op, lhs, rhs);
-				unimplemented!("binary expression");
+				if *op == BinOp::Add && self.ctx.node_type(lhs.id).is_string() {
+					self.call_rt_concat(dst, lhs, rhs, b);
+				} else if *op == BinOp::Eq && self.ctx.node_type(lhs.id).is_string() {
+					self.call_rt_streq(dst, lhs, rhs, b);
+				} else {
+					self.visit_exp_into_reg(lhs, dst, b);
+					let rhs_reg = self.visit_exp(rhs, b);
+					b.inst_from_binop(*op, dst, dst, rhs_reg);
+				}
 			}
 
 			Call { callee, args } => {
@@ -1165,7 +1176,10 @@ impl<'ctx> DirectCg<'ctx> {
 			}
 
 			New(..) => {
-				unimplemented!("new struct expression");
+				let id = self.get_struct_sym_id(&e);
+				let layout = self.get_struct_layout(id);
+				let size = layout.size();
+				self.call_rt_new(dst, size, b);
 			}
 
 			Parens(exp) => {
@@ -1176,14 +1190,16 @@ impl<'ctx> DirectCg<'ctx> {
 
 	// simplest kind: just `jal` to a function.
 	fn direct_call(&mut self, name: &str, args: &Vec<Box<Exp>>, b: &mut CgFuncBuilder) {
-		let _ = (name, args, b);
-		unimplemented!("direct calls");
+		self.visit_args(None, args, b);
+		b.jal(name);
 	}
 
 	// more complex: have to evaluate callee into a register, then `jalr` it.
 	fn indirect_call(&mut self, callee: &Box<Exp>, args: &Vec<Box<Exp>>, b: &mut CgFuncBuilder) {
-		let _ = (callee, args, b);
-		unimplemented!("indirect calls");
+		let callee_reg = self.visit_exp_no_free(&callee, b);
+		self.visit_args(None, args, b);
+		b.jalr(callee_reg);
+		b.pop_reg();
 	}
 
 	// since we're only doing static dispatch, this is almost the same as a regular
