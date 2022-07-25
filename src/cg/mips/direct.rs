@@ -1049,18 +1049,72 @@ impl<'ctx> DirectCg<'ctx> {
 			}
 
 			While { cond, code } => {
-				let _ = (cond, code);
-				unimplemented!("while statement");
+				let cond_label = b.make_label_name("while_cond");
+				let end_label = b.make_label_name("while_end");
+
+				b.label(&cond_label);
+				let reg = self.visit_exp(&cond, b);
+				b.beqz(reg, &end_label);
+
+				self.visit_stmt(&code, b);
+				b.jump(&cond_label);
+				b.label(&end_label);
 			}
 
 			If { cond, then, else_ } => {
-				let _ = (cond, then, else_);
-				unimplemented!("if statement");
+				let else_label = b.make_label_name("if_else");
+				let end_label = b.make_label_name("if_end");
+
+				//visit the cond
+				let reg = self.visit_exp(&cond, b);
+
+				match else_ {	
+					//if else is empty
+					None => {
+						b.beqz(reg, &end_label);
+						self.visit_stmt(&then, b);
+					}
+
+					//if there is an else
+					Some(val) => {
+						b.beqz(reg, &else_label);
+						self.visit_stmt(&then, b);
+						b.jump(&end_label);
+
+						b.label(&else_label);
+						self.visit_stmt(val, b);
+					}
+				}
+
+				b.label(&end_label);
 			}
 
 			For { var, hi, code } => {
-				let _ = (var, hi, code);
-				unimplemented!("for statement");
+				let cond_label = b.make_label_name("for_cond");
+				let end_label = b.make_label_name("for_end");
+
+				let var_loc = self.visit_local_var_decl(var, b);
+				let hi_reg = self.visit_exp_no_free(hi, b);
+
+				b.label(&cond_label);
+
+				let reg = b.cur_reg();
+				self.loc_into_reg(reg, var_loc.clone(), b);
+				b.set_less_than(reg, reg, hi_reg);
+
+				b.beqz(reg, &end_label);
+
+				self.visit_stmt(&code, b);
+
+				let reg = b.cur_reg();
+				self.loc_into_reg(reg, var_loc.clone(), b);
+				b.inc(reg);
+				self.reg_into_loc(var_loc, reg, b);
+
+				b.jump(&cond_label);
+
+				b.label(&end_label);
+				b.pop_reg();
 			}
 		}
 	}
@@ -1111,7 +1165,7 @@ impl<'ctx> DirectCg<'ctx> {
 			}
 
 			Null => {
-				unimplemented!("null expression");
+				b.load_immediate(dst, 0 as isize);
 			}
 
 			Id(ident) => {
@@ -1131,13 +1185,26 @@ impl<'ctx> DirectCg<'ctx> {
 			}
 
 			Binary { op: BinOp::And, lhs, rhs } => {
-				let _ = (lhs, rhs);
-				unimplemented!("logical AND expression");
+				self.visit_exp_into_reg(lhs, dst, b);
+
+				let and_cond = b.make_label_name("_and");
+
+				b.beqz(dst, &and_cond);
+
+				self.visit_exp_into_reg(rhs, dst, b);
+				b.label(&and_cond);
+
 			}
 
 			Binary { op: BinOp::Or, lhs, rhs } => {
-				let _ = (lhs, rhs);
-				unimplemented!("logical OR expression");
+				self.visit_exp_into_reg(lhs, dst, b);
+
+				let or_cond = b.make_label_name("_or");
+
+				b.beqz(dst, &or_cond);
+
+				self.visit_exp_into_reg(rhs, dst, b);
+				b.label(&or_cond);
 			}
 
 			Binary { op, lhs, rhs } => {
@@ -1206,7 +1273,8 @@ impl<'ctx> DirectCg<'ctx> {
 	// function call, with the addition of the extra "this" argument at the front.
 	fn method_call(&mut self, obj: &Box<Exp>, name: &str, args: &Vec<Box<Exp>>,
 	b: &mut CgFuncBuilder) {
-		let _ = (obj, name, args, b);
-		unimplemented!("method calls");
+		let method_name = self.get_struct_method_name(obj, name);
+		self.visit_args(Some(obj), args, b);
+		b.jal(&method_name);
 	}
 }
