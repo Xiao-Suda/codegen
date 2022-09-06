@@ -1,9 +1,3 @@
-## Project 4
+## Truss compiler
 
-This is the codegen project!
-
-[Please see the assignment page here.](https://jarrettbillingsley.github.io/teaching/classes/cs1622/projects/proj4.html)
-
-Name: Louisa Li
-
-Username: lol25
+This project is primarily built on Rust and is run through MIPs. It contains a lexer, parser, and semantic analysis to split the source code into understandable grammars to be then ran through the code generator.
